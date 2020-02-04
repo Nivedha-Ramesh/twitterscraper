@@ -1,4 +1,4 @@
-from scraper.query import query_tweets
+from query import query_tweets
 
 # Query for tweets with the keyword adidas in it and then print the text and the respective number of likes for every tweet
 
