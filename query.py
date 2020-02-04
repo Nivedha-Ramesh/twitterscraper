@@ -11,7 +11,7 @@ from billiard.pool import Pool
 from bs4 import BeautifulSoup
 from itertools import cycle
 from numpy import *
-from scraper.tweet import Tweet
+from tweet import Tweet
 import logging
 import sys
 
@@ -71,112 +71,65 @@ proxies = get_proxies()
 proxy_pool = cycle(proxies)
 
 def query_single_page(query, lang, pos, retry=50, from_user=False, timeout=60):
-    """
-    Returns tweets from the given URL.
-
-    :param query: The query parameter of the query url
-    :param lang: The language parameter of the query url
-    :param pos: The query url parameter that determines where to start looking
-    :param retry: Number of retries if something goes wrong.
-    :return: The list of tweets, the pos argument for getting the next page.
-    """
     url = get_query_url(query, lang, pos, from_user)
-    try:
-        proxy = next(proxy_pool)
-        response = requests.get(url, headers=HEADER, proxies={"http": proxy}, timeout=timeout)
-        if pos is None:  # html response
-            html = response.text or ''
-            json_resp = None
-        else:
-            html = ''
-            try:
-                json_resp = response.json()
-                html = json_resp['items_html'] or ''
-            except ValueError as e:
-                logging.exception('Failed to parse JSON "{}" while requesting "{}"'.format(e, url))
 
-        tweets = list(Tweet.from_html(html))
+    proxy = next(proxy_pool)
+    response = requests.get(url, headers=HEADER, proxies={"http": proxy}, timeout=timeout)
+    if pos is None:  # html response
+        html = response.text or ''
+        json_resp = None
+    else:
+        html = ''
+        json_resp = response.json()
+        html = json_resp['items_html'] or ''
+    tweets = list(Tweet.from_html(html))
 
-        if not tweets:
-            try:
-                if json_resp:
-                    pos = json_resp['min_position']
-                    has_more_items = json_resp['has_more_items']
-                    if not has_more_items:
-                        logging.info("Twitter returned : 'has_more_items' ")
-                        return [], None
-                else:
-                    pos = None
-            except:
-                pass
-            if retry > 0:
-                logging.info('Retrying... (Attempts left: {})'.format(retry))
-                return query_single_page(query, lang, pos, retry - 1, from_user)
-            else:
-                return [], pos
-
+    if not tweets:
         if json_resp:
-            return tweets, urllib.parse.quote(json_resp['min_position'])
-        if from_user:
-            return tweets, tweets[-1].tweet_id
-        return tweets, "TWEET-{}-{}".format(tweets[-1].tweet_id, tweets[0].tweet_id)
+            pos = json_resp['min_position']
+            has_more_items = json_resp['has_more_items']
+            if not has_more_items:
+                return [], None
+        else:
+            pos = None
 
-    except requests.exceptions.HTTPError as e:
-        logging.exception('HTTPError {} while requesting "{}"'.format(
-            e, url))
-    except requests.exceptions.ConnectionError as e:
-        logging.exception('ConnectionError {} while requesting "{}"'.format(
-            e, url))
-    except requests.exceptions.Timeout as e:
-        logging.exception('TimeOut {} while requesting "{}"'.format(
-            e, url))
-    except json.decoder.JSONDecodeError as e:
-        logging.exception('Failed to parse JSON "{}" while requesting "{}".'.format(
-            e, url))
+        if retry > 0:
+            return query_single_page(query, lang, pos, retry - 1, from_user)
+        else:
+            return [], pos
+
+    if json_resp:
+        return tweets, urllib.parse.quote(json_resp['min_position'])
+    if from_user:
+        return tweets, tweets[-1].tweet_id
+    return tweets, "TWEET-{}-{}".format(tweets[-1].tweet_id, tweets[0].tweet_id)
 
     if retry > 0:
-        logging.info('Retrying... (Attempts left: {})'.format(retry))
         return query_single_page(query, lang, pos, retry - 1)
 
-    logging.error('Giving up.')
     return [], None
 
 
 def query_tweets_once_generator(query, limit=None, lang='', pos=None):
-    logging.info('Querying {}'.format(query))
     query = query.replace(' ', '%20').replace('#', '%23').replace(':', '%3A').replace('&', '%26')
     num_tweets = 0
-    try:
-        while True:
-            new_tweets, new_pos = query_single_page(query, lang, pos)
-            if len(new_tweets) == 0:
-                logging.info('Got {} tweets for {}.'.format(
-                    num_tweets, query))
-                return
+    while True:
+        new_tweets, new_pos = query_single_page(query, lang, pos)
+        if len(new_tweets) == 0:
+            return
 
-            for t in new_tweets:
-                yield t, pos
+        for t in new_tweets:
+            yield t, pos
 
-            # use new_pos only once you have iterated through all old tweets
-            pos = new_pos
+        # use new_pos only once you have iterated through all old tweets
+        pos = new_pos
 
-            num_tweets += len(new_tweets)
+        num_tweets += len(new_tweets)
 
-            if limit and num_tweets >= limit:
-                logging.info('Got {} tweets for {}.'.format(
-                    num_tweets, query))
-                return
+        if limit and num_tweets >= limit:
+            return
 
-    except KeyboardInterrupt:
-        logging.info('Program interrupted by user. Returning tweets gathered '
-                     'so far...')
-    except BaseException:
-        logging.exception('An unknown error occurred! Returning tweets '
-                          'gathered so far.')
-    logging.info('Got {} tweets for {}.'.format(
-        num_tweets, query))
-
-
+   
 def query_tweets_once(*args, **kwargs):
     res = list(query_tweets_once_generator(*args, **kwargs))
     if res:
@@ -207,15 +160,8 @@ def query_tweets(query, limit=None, begindate=dt.date(2006, 3, 21), enddate=dt.d
     all_tweets = []
     try:
         pool = Pool(poolsize)
-        logging.info('queries: {}'.format(queries))
-        try:
-            for new_tweets in pool.imap_unordered(partial(query_tweets_once, limit=limit_per_pool, lang=lang), queries):
-                all_tweets.extend(new_tweets)
-                logging.info('Got {} tweets ({} new).'.format(
-                    len(all_tweets), len(new_tweets)))
-        except KeyboardInterrupt:
-            logging.info('Program interrupted by user. Returning all tweets '
-                         'gathered so far.')
+        for new_tweets in pool.imap_unordered(partial(query_tweets_once, limit=limit_per_pool, lang=lang), queries):
+            all_tweets.extend(new_tweets)
     finally:
         pool.close()
         pool.join()
